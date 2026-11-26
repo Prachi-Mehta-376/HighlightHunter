@@ -121,3 +121,17 @@ def test_generate_sample_image(tmp_path):
     img.save(sample_path)
     # Verify file written.
     assert sample_path.exists()
+
+
+def test_annotated_image_preserves_rgb_channels():
+    # Blue background outside highlight must stay blue (not channel-swapped to red).
+    img = Image.new("RGB", (200, 200), color=(0, 0, 200))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([40, 60, 120, 90], fill=(255, 255, 0))
+    detections, _, annotated = detect_highlights(
+        img,
+        min_area=100,
+        thresholds={"yellow": DEFAULT_THRESHOLDS["yellow"]},
+    )
+    assert len(detections) == 1
+    assert annotated.getpixel((5, 5)) == (0, 0, 200)

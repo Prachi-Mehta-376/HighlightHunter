@@ -2,5 +2,7 @@ streamlit
 opencv-python
 numpy
 pillow
+pytesseract
+reportlab
 pytest
 pypdf>=3.0.0

@@ -1,23 +1,52 @@
-"""Extractor module for cropping highlighted snippets from an image.
-Provides a placeholder `extract_text` (for compatibility) and a full
-`extract_snippets` implementation used by the Streamlit UI.
-"""
+"""Extractor module for cropping highlighted snippets and running OCR."""
 
 from typing import List, Dict
+import cv2
+import numpy as np
+import pytesseract
 from PIL import Image
-from io import BytesIO
+
+
+class TesseractNotInstalledError(RuntimeError):
+    """Raised when the Tesseract OCR binary is not installed or not on PATH."""
+
+
+def _preprocess_for_ocr(image: Image.Image) -> Image.Image:
+    """Convert a snippet image to a clean grayscale/binarized image for OCR."""
+    rgb = np.array(image.convert("RGB"))
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+    # Upscale small snippets so Tesseract can resolve small font glyphs reliably.
+    height, width = gray.shape[:2]
+    if height < 80 or width < 200:
+        gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+
+    # Light Gaussian blur + Otsu binarization separates dark text from highlight fills.
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return Image.fromarray(thresh)
 
 
 def extract_text(image: Image.Image) -> str:
-    """Placeholder function for extracting text from highlighted regions.
+    """Extract text from a highlighted image region using pytesseract OCR.
 
     Args:
-        image: Pillow Image.
+        image: Pillow Image (not modified in place).
     Returns:
-        Empty string (OCR not implemented).
+        Extracted text string (whitespace-trimmed).
+    Raises:
+        TesseractNotInstalledError: If the Tesseract binary cannot be found.
     """
-    # TODO: implement OCR extraction (e.g., using pytesseract)
-    return ""
+    processed = _preprocess_for_ocr(image)
+    try:
+        text = pytesseract.image_to_string(processed, config="--psm 6")
+    except pytesseract.TesseractNotFoundError as exc:
+        raise TesseractNotInstalledError(
+            "Tesseract OCR is not installed or not found on PATH. "
+            "Install Tesseract (e.g., `brew install tesseract` on macOS, "
+            "`sudo apt-get install tesseract-ocr` on Linux) and restart the app."
+        ) from exc
+    return text.strip()
 
 
 def extract_snippets(
@@ -41,7 +70,7 @@ def extract_snippets(
     -------
     snippets: list of dict
         Each dict contains:
-        - ``id``: unique integer identifier (starting at 1).
+        - ``id``: unique integer identifier (starting at 1, ordered top-to-bottom, left-to-right).
         - ``color``: highlight colour.
         - ``orig_bbox``: original (x, y, w, h).
         - ``padded_bbox``: (x, y, w, h) after padding.
@@ -50,11 +79,9 @@ def extract_snippets(
     """
     if not detections:
         return []
-    from io import BytesIO
-    # Work on a copy to avoid mutating the original image.
     img_w, img_h = image.size
     snippets: List[Dict] = []
-    for idx, det in enumerate(detections, start=1):
+    for det in detections:
         x, y, w, h = det["bbox"]
         # Apply padding and clamp to image bounds.
         if x < 0:
@@ -72,7 +99,7 @@ def extract_snippets(
         padded_bbox = (x0, y0, x1 - x0, y1 - y0)
         cropped = image.crop((x0, y0, x1, y1))
         snippet = {
-            "id": idx,
+            "id": 0,
             "color": det["color"],
             "orig_bbox": (x, y, w, h),
             "padded_bbox": padded_bbox,
@@ -81,6 +108,9 @@ def extract_snippets(
             "height": cropped.height,
         }
         snippets.append(snippet)
-    # Sort snippets in natural reading order: top‑to‑bottom then left‑to‑right.
+    # Sort snippets in natural reading order: top-to-bottom then left-to-right,
+    # then assign sequential IDs starting at 1.
     snippets.sort(key=lambda s: (s["orig_bbox"][1], s["orig_bbox"][0]))
+    for idx, snippet in enumerate(snippets, start=1):
+        snippet["id"] = idx
     return snippets

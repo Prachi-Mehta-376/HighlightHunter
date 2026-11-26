@@ -123,22 +123,27 @@ def detect_highlights(
     - masks: dict of colour → binary mask.
     - annotated: PIL.Image.Image with coloured bounding boxes.
     """
+    if pil_image.mode != "RGB":
+        pil_image = pil_image.convert("RGB")
     rgb = np.array(pil_image)
-    if rgb.ndim == 2:
-        rgb = cv2.cvtColor(rgb, cv2.COLOR_GRAY2RGB)
     rgb_copy = rgb.copy()
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     detections: List[Dict] = []
     masks: Dict[str, np.ndarray] = {}
+    colour_rgb_map = {
+        "yellow": (255, 255, 0),
+        "green": (0, 255, 0),
+        "pink": (255, 0, 255),
+    }
     for colour in thresholds.keys():
         mask = _create_mask(hsv, colour, thresholds[colour])
         masks[colour] = mask
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         boxes = _filter_contours(contours, min_area, min_width, min_height, max_aspect)
         boxes = _merge_boxes(boxes)
+        box_colour = colour_rgb_map.get(colour, (106, 13, 173))
         for (x, y, w, h) in boxes:
             detections.append({"color": colour, "bbox": (x, y, w, h), "area": int(w * h)})
-            colour_bgr = {"yellow": (0, 255, 255), "green": (0, 255, 0), "pink": (255, 0, 255)}[colour]
-            cv2.rectangle(rgb_copy, (x, y), (x + w, y + h), colour_bgr, 2)
-    annotated = Image.fromarray(cv2.cvtColor(rgb_copy, cv2.COLOR_BGR2RGB))
+            cv2.rectangle(rgb_copy, (x, y), (x + w, y + h), box_colour, 2)
+    annotated = Image.fromarray(rgb_copy)
     return [detections, masks, annotated]

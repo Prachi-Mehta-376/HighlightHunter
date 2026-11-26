@@ -1,5 +1,56 @@
+"""PDF generation module using ReportLab for HighlightHunter."""
+
+from datetime import datetime
+from io import BytesIO
+from pathlib import Path
+from typing import Dict, List
+
+from PIL import Image
+from reportlab.lib.colors import HexColor
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader, simpleSplit
+from reportlab.pdfgen import canvas
+
+import extractor
+
+PURPLE_ACCENT = HexColor("#6a0dad")
+TEXT_DARK = HexColor("#1f1f1f")
+TEXT_MUTED = HexColor("#555555")
+PAGE_W, PAGE_H = A4
+MARGIN = 40
+FOOTER_SPACE = 35
+USABLE_W = PAGE_W - 2 * MARGIN
+
+
+def _to_rgb_reader(image: Image.Image) -> ImageReader:
+    """Return a ReportLab ImageReader without mutating the source image."""
+    rgb_img = image if image.mode == "RGB" else image.convert("RGB")
+    return ImageReader(rgb_img)
+
+
+def _wrap_text_lines(text: str, font_name: str, font_size: int, max_width: float) -> List[str]:
+    """Wrap multi-line text into lines fitting within *max_width* points."""
+    wrapped: List[str] = []
+    for raw_line in text.splitlines():
+        if not raw_line.strip():
+            wrapped.append("")
+        else:
+            wrapped.extend(simpleSplit(raw_line, font_name, font_size, max_width))
+    return wrapped
+
+
+def _draw_footer(c: canvas.Canvas, page_num: int) -> None:
+    """Draw a centered purple footer with the page number."""
+    c.saveState()
+    c.setFont("Helvetica", 9)
+    c.setFillColor(PURPLE_ACCENT)
+    footer_text = f"Generated with HighlightHunter – Page {page_num}"
+    c.drawCentredString(PAGE_W / 2.0, 22, footer_text)
+    c.restoreState()
+
+
 def generate_pdf(image, output_path="highlight_report.pdf"):
-    """Placeholder function for generating a PDF from the image and extracted text.
+    """Generate a single-image highlight report PDF using ReportLab.
 
     Args:
         image (PIL.Image.Image): Image object.
@@ -7,35 +58,82 @@ def generate_pdf(image, output_path="highlight_report.pdf"):
     Returns:
         str: Path to the generated PDF file.
     """
-    # TODO: implement actual PDF generation using ReportLab or similar.
-    # For now, just return the intended path without creating a file.
-    return output_path
+    out_file = Path(output_path)
+    if out_file.parent and str(out_file.parent) != ".":
+        out_file.parent.mkdir(parents=True, exist_ok=True)
 
-# ---------------------------------------------------------------------------
-# New revision‑sheet PDF generator (Sprint 4 backend)
-# ---------------------------------------------------------------------------
+    c = canvas.Canvas(str(out_file), pagesize=A4)
+    c.setTitle("HighlightHunter Report")
 
-from typing import List, Dict
-from io import BytesIO
-from datetime import datetime
-from PIL import Image, ImageDraw, ImageFont
+    # Header
+    y_cursor = PAGE_H - MARGIN
+    c.setFont("Helvetica-Bold", 18)
+    c.setFillColor(PURPLE_ACCENT)
+    c.drawString(MARGIN, y_cursor - 18, "HighlightHunter Report")
+    y_cursor -= 32
 
-def _draw_footer(draw: ImageDraw.Draw, page_num: int, width: int, height: int, font: ImageFont.ImageFont):
-    footer_text = f"Generated with HighlightHunter – Page {page_num}"
-    w = font.getbbox(footer_text)[2] - font.getbbox(footer_text)[0]
-    draw.text(((width - w) / 2, height - 30), footer_text, fill="#6a0dad", font=font)
+    c.setFont("Helvetica", 10)
+    c.setFillColor(TEXT_MUTED)
+    c.drawString(MARGIN, y_cursor, f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    y_cursor -= 20
+
+    # Scaled image preview
+    iw, ih = image.size
+    max_img_h = 340.0
+    scale = min(USABLE_W / float(iw), max_img_h / float(ih), 1.0)
+    disp_w, disp_h = iw * scale, ih * scale
+    x_offset = MARGIN + (USABLE_W - disp_w) / 2.0
+    c.drawImage(_to_rgb_reader(image), x_offset, y_cursor - disp_h, width=disp_w, height=disp_h)
+    y_cursor -= disp_h + 24
+
+    # Extracted OCR text (best effort if Tesseract is missing)
+    extracted_text = ""
+    try:
+        extracted_text = extractor.extract_text(image)
+    except extractor.TesseractNotInstalledError:
+        extracted_text = ""
+
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(PURPLE_ACCENT)
+    c.drawString(MARGIN, y_cursor, "Extracted Text")
+    y_cursor -= 18
+
+    body_text = extracted_text if extracted_text else "(No text extracted)"
+    lines = _wrap_text_lines(body_text, "Helvetica", 10, USABLE_W)
+    page_num = 1
+    c.setFont("Helvetica", 10)
+    c.setFillColor(TEXT_DARK)
+    for line in lines:
+        if y_cursor < MARGIN + FOOTER_SPACE:
+            _draw_footer(c, page_num)
+            c.showPage()
+            page_num += 1
+            y_cursor = PAGE_H - MARGIN
+            c.setFont("Helvetica", 10)
+            c.setFillColor(TEXT_DARK)
+        if line:
+            c.drawString(MARGIN, y_cursor, line)
+        y_cursor -= 14
+
+    _draw_footer(c, page_num)
+    c.showPage()
+    c.save()
+    return str(output_path)
+
 
 def generate_revision_pdf(snippets: List[Dict], title: str = "My Revision Notes") -> bytes:
-    """Generate a revision‑sheet PDF from a list of snippet dictionaries.
+    """Generate a revision-sheet PDF from a list of snippet dictionaries using ReportLab.
 
-    The function creates an A4‑sized PDF (595×842 px @ 72 dpi) entirely in memory.
-    It raises ``ValueError`` when ``snippets`` is empty.
+    Creates an A4 PDF in memory with a title/summary first page followed by
+    snippet pages containing each snippet's label, image, OCR text, and page footer.
+    Raises ``ValueError`` when ``snippets`` is empty.
 
     Parameters
     ----------
     snippets: list of dicts
         Each dict must contain the keys produced by ``extractor.extract_snippets``:
-        ``id``, ``color``, ``image`` (Pillow Image), ``width`` and ``height``.
+        ``id``, ``color``, ``image`` (Pillow Image), ``width`` and ``height``,
+        and may optionally include ``text`` (str).
     title: str
         Custom title shown on the first page.
 
@@ -47,102 +145,99 @@ def generate_revision_pdf(snippets: List[Dict], title: str = "My Revision Notes"
     if not snippets:
         raise ValueError("No snippets provided for PDF generation.")
 
-    # A4 dimensions at 72 dpi (points) – Pillow works in pixels.
-    PAGE_W, PAGE_H = 595, 842
-    MARGIN = 40
-    SPACING = 20
+    output = BytesIO()
+    c = canvas.Canvas(output, pagesize=A4)
+    pdf_title = (title or "My Revision Notes").strip() or "My Revision Notes"
+    c.setTitle(pdf_title)
 
-    # Fonts – fall back to the default Pillow font.
-    try:
-        title_font = ImageFont.truetype("arial.ttf", 24)
-        header_font = ImageFont.truetype("arial.ttf", 18)
-        body_font = ImageFont.truetype("arial.ttf", 14)
-    except Exception:
-        title_font = ImageFont.load_default()
-        header_font = ImageFont.load_default()
-        body_font = ImageFont.load_default()
+    # --- Page 1: Title & Summary ---
+    title_lines = _wrap_text_lines(pdf_title, "Helvetica-Bold", 24, USABLE_W)
+    y_title = PAGE_H - MARGIN - 40
+    c.setFont("Helvetica-Bold", 24)
+    c.setFillColor(PURPLE_ACCENT)
+    for line in title_lines:
+        c.drawCentredString(PAGE_W / 2.0, y_title, line)
+        y_title -= 30
 
-    pages: List[Image.Image] = []
-    # First page – title and summary
-    first_page = Image.new("RGB", (PAGE_W, PAGE_H), "white")
-    d = ImageDraw.Draw(first_page)
-    # Title
-    w = title_font.getbbox(title)[2] - title_font.getbbox(title)[0]
-    d.text(((PAGE_W - w) / 2, MARGIN), title, fill="#6a0dad", font=title_font)
-    # Subtitle / date
+    c.setFont("Helvetica", 14)
+    c.setFillColor(TEXT_DARK)
     date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    w = header_font.getbbox(date_str)[2] - header_font.getbbox(date_str)[0]
-    d.text(((PAGE_W - w) / 2, MARGIN + 40), date_str, fill="black", font=header_font)
-    # Total snippets count
-    count_str = f"Total snippets: {len(snippets)}"
-    bbox = body_font.getbbox(count_str)
-    w = bbox[2] - bbox[0]
-    d.text(((PAGE_W - w) / 2, MARGIN + 80), count_str, fill="black", font=body_font)
-    # Footer
-    _draw_footer(d, 1, PAGE_W, PAGE_H, body_font)
-    pages.append(first_page)
+    c.drawCentredString(PAGE_W / 2.0, y_title - 12, date_str)
 
-    # Subsequent pages – each snippet with label and image
-    cur_page = Image.new("RGB", (PAGE_W, PAGE_H), "white")
-    draw = ImageDraw.Draw(cur_page)
-    y_cursor = MARGIN
+    c.setFont("Helvetica", 12)
+    c.setFillColor(TEXT_MUTED)
+    c.drawCentredString(PAGE_W / 2.0, y_title - 42, f"Total snippets: {len(snippets)}")
+
+    _draw_footer(c, 1)
+    c.showPage()
+
+    # --- Subsequent Pages: Snippet Images + OCR Text ---
     page_num = 2
+    y_cursor = PAGE_H - MARGIN
+    min_y = MARGIN + FOOTER_SPACE
+    max_single_page_img_h = PAGE_H - 2 * MARGIN - FOOTER_SPACE - 60
+
+    def start_new_page() -> None:
+        nonlocal page_num, y_cursor
+        _draw_footer(c, page_num)
+        c.showPage()
+        page_num += 1
+        y_cursor = PAGE_H - MARGIN
 
     for snip in snippets:
-        # Prepare label
         label = f"Snippet {snip['id']} ({snip['color']})"
-        label_h = body_font.getbbox(label)[3] - body_font.getbbox(label)[1]
-        # Reserve space for label + spacing
-        needed_h = label_h + SPACING
-        # Compute max height available for image after label
-        max_img_h = PAGE_H - MARGIN - y_cursor - needed_h - 30  # reserve bottom margin & footer space
-        max_img_w = PAGE_W - 2 * MARGIN
-
-        # Determine scaled size preserving aspect ratio
         img = snip["image"]
         iw, ih = img.size
-        # If there is no vertical space left, start a new page first
-        if max_img_h <= 0:
-            _draw_footer(draw, page_num - 1, PAGE_W, PAGE_H, body_font)
-            pages.append(cur_page)
-            cur_page = Image.new("RGB", (PAGE_W, PAGE_H), "white")
-            draw = ImageDraw.Draw(cur_page)
-            y_cursor = MARGIN
-            page_num += 1
-            # recompute available space after page break
-            max_img_h = PAGE_H - MARGIN - y_cursor - needed_h - 30
-        scale = min(max_img_w / iw, max_img_h / ih, 1.0)
-        disp_w, disp_h = int(iw * scale), int(ih * scale)
-        # If the snippet does not fit vertically, start a new page
-        if y_cursor + needed_h + disp_h + 30 > PAGE_H:
-            # Footer for the current page
-            _draw_footer(draw, page_num - 1, PAGE_W, PAGE_H, body_font)
-            pages.append(cur_page)
-            cur_page = Image.new("RGB", (PAGE_W, PAGE_H), "white")
-            draw = ImageDraw.Draw(cur_page)
-            y_cursor = MARGIN
-            page_num += 1
-        # Draw label
-        draw.text((MARGIN, y_cursor), label, fill="#6a0dad", font=body_font)
-        y_cursor += needed_h
-        # Center image horizontally
-        x_offset = MARGIN + (max_img_w - disp_w) // 2
-        # Paste resized image
-        if scale != 1.0:
-            img_resized = img.resize((disp_w, disp_h), Image.Resampling.LANCZOS)
-        else:
-            img_resized = img
-        cur_page.paste(img_resized, (x_offset, y_cursor))
-        y_cursor += disp_h + SPACING
+        scale = min(USABLE_W / float(iw), max_single_page_img_h / float(ih), 1.0)
+        disp_w, disp_h = iw * scale, ih * scale
 
-    # Footer for last page
-    _draw_footer(draw, page_num, PAGE_W, PAGE_H, body_font)
-    pages.append(cur_page)
+        ocr_text = (snip.get("text") or "").strip()
+        wrapped_text = _wrap_text_lines(ocr_text, "Helvetica", 10, USABLE_W) if ocr_text else []
+        # Reserve enough height for label + image + at least the first few lines of text if present
+        min_text_h = (18 + min(len(wrapped_text), 2) * 14) if wrapped_text else 0
+        needed_start_h = 22 + disp_h + 10 + min_text_h
 
-    # Save all pages to a BytesIO as PDF
-    output = BytesIO()
-    # Pillow expects the first image to call save with append_images for rest
-    pages[0].save(output, format="PDF", save_all=True, append_images=pages[1:])
+        # Start a new page if the snippet header + image won't fit in remaining space
+        if y_cursor - needed_start_h < min_y and y_cursor < PAGE_H - MARGIN:
+            start_new_page()
+
+        # Draw snippet label
+        c.setFont("Helvetica-Bold", 12)
+        c.setFillColor(PURPLE_ACCENT)
+        c.drawString(MARGIN, y_cursor - 12, label)
+        y_cursor -= 22
+
+        # Draw snippet image centered horizontally
+        x_offset = MARGIN + (USABLE_W - disp_w) / 2.0
+        c.drawImage(_to_rgb_reader(img), x_offset, y_cursor - disp_h, width=disp_w, height=disp_h)
+        y_cursor -= disp_h + 12
+
+        # Draw OCR text if available
+        if wrapped_text:
+            if y_cursor - 16 < min_y:
+                start_new_page()
+            c.setFont("Helvetica-Bold", 10)
+            c.setFillColor(TEXT_MUTED)
+            c.drawString(MARGIN, y_cursor - 10, "Extracted Text:")
+            y_cursor -= 18
+
+            c.setFont("Helvetica", 10)
+            c.setFillColor(TEXT_DARK)
+            for line in wrapped_text:
+                if y_cursor - 14 < min_y:
+                    start_new_page()
+                    c.setFont("Helvetica", 10)
+                    c.setFillColor(TEXT_DARK)
+                if line:
+                    c.drawString(MARGIN, y_cursor - 10, line)
+                y_cursor -= 14
+
+        y_cursor -= 16
+
+    _draw_footer(c, page_num)
+    c.showPage()
+    c.save()
+
     pdf_bytes = output.getvalue()
     output.close()
     return pdf_bytes

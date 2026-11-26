@@ -4,7 +4,7 @@ from PIL import Image
 import numpy as np
 import extractor
 import detector
-from pdf_generator import generate_revision_pdf
+from pdf_generator import generate_pdf, generate_revision_pdf
 
 # Helper to create a simple colored image
 def make_image(color, size=(200, 100)):
@@ -87,3 +87,61 @@ def test_integration_with_detector_and_extractor():
     assert len(reader.pages) >= 2
     # Ensure at least one snippet present
     assert len(snippets) >= 2
+
+
+def test_generate_pdf_creates_valid_pdf_with_text(tmp_path, monkeypatch):
+    img = make_image("yellow", (200, 100))
+    out_file = tmp_path / "single_report.pdf"
+    monkeypatch.setattr(extractor, "extract_text", lambda _img: "Key formula: E = mc^2")
+
+    returned_path = generate_pdf(img, output_path=str(out_file))
+    assert returned_path == str(out_file)
+    assert out_file.exists()
+
+    from pypdf import PdfReader
+    reader = PdfReader(str(out_file))
+    assert len(reader.pages) == 1
+    page_text = reader.pages[0].extract_text()
+    assert "HighlightHunter Report" in page_text
+    assert "Key formula: E = mc^2" in page_text
+
+
+def test_generate_revision_pdf_includes_ocr_text():
+    img1 = make_image("yellow", (200, 60))
+    img2 = make_image("green", (200, 60))
+    snippets = [
+        {"id": 1, "color": "yellow", "image": img1, "width": 200, "height": 60, "text": "Photosynthesis converts light energy."},
+        {"id": 2, "color": "green", "image": img2, "width": 200, "height": 60, "text": "Mitochondria generate ATP."},
+    ]
+    pdf_bytes = generate_revision_pdf(snippets, title="Biology Notes")
+
+    from pypdf import PdfReader
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) == 2
+
+    page0_text = reader.pages[0].extract_text()
+    page1_text = reader.pages[1].extract_text()
+    assert "Biology Notes" in page0_text
+    assert "Total snippets: 2" in page0_text
+    assert "Page 1" in page0_text
+    assert "Snippet 1 (yellow)" in page1_text
+    assert "Photosynthesis converts light energy." in page1_text
+    assert "Snippet 2 (green)" in page1_text
+    assert "Mitochondria generate ATP." in page1_text
+    assert "Page 2" in page1_text
+
+
+def test_generate_revision_pdf_long_ocr_text_paginates():
+    img = make_image("pink", (300, 120))
+    long_text = " ".join([f"Sentence {i}: important revision detail for exam prep." for i in range(1, 140)])
+    snippets = [
+        {"id": 1, "color": "pink", "image": img, "width": 300, "height": 120, "text": long_text},
+    ]
+    pdf_bytes = generate_revision_pdf(snippets, title="Long OCR Test")
+
+    from pypdf import PdfReader
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) >= 3
+    all_text = "\n".join(page.extract_text() for page in reader.pages)
+    assert "Sentence 1:" in all_text
+    assert "Sentence 139:" in all_text
