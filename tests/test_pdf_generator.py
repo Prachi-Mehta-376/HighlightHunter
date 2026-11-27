@@ -145,3 +145,71 @@ def test_generate_revision_pdf_long_ocr_text_paginates():
     all_text = "\n".join(page.extract_text() for page in reader.pages)
     assert "Sentence 1:" in all_text
     assert "Sentence 139:" in all_text
+
+
+def test_generate_revision_pdf_includes_page_headings_for_multi_image_snippets():
+    img1 = make_image("yellow", (200, 60))
+    img2 = make_image("pink", (200, 60))
+    snippets = [
+        {
+            "id": 1,
+            "page": 1,
+            "source_name": "notes_p1.png",
+            "color": "yellow",
+            "image": img1,
+            "width": 200,
+            "height": 60,
+            "text": "Definition from page one.",
+        },
+        {
+            "id": 2,
+            "page": 2,
+            "source_name": "notes_p2.png",
+            "color": "pink",
+            "image": img2,
+            "width": 200,
+            "height": 60,
+            "text": "Formula from page two.",
+        },
+    ]
+    pdf_bytes = generate_revision_pdf(snippets, title="Combined Study Guide")
+
+    from pypdf import PdfReader
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) == 2
+
+    page0_text = reader.pages[0].extract_text()
+    page1_text = reader.pages[1].extract_text()
+    assert "Combined Study Guide" in page0_text
+    assert "Total snippets: 2" in page0_text
+    assert "Source pages: 2" in page0_text
+    assert "Page 1 (notes_p1.png) – Snippet 1 (yellow)" in page1_text
+    assert "Definition from page one." in page1_text
+    assert "Page 2 (notes_p2.png) – Snippet 2 (pink)" in page1_text
+    assert "Formula from page two." in page1_text
+
+
+def test_generate_revision_pdf_wraps_long_source_filename_heading():
+    img = make_image("green", (200, 60))
+    long_name = "very_long_lecture_notes_scan_chapter_12_section_4_highlighted_copy.png"
+    snippets = [
+        {
+            "id": 1,
+            "page": 3,
+            "source_name": long_name,
+            "color": "green",
+            "image": img,
+            "width": 200,
+            "height": 60,
+            "text": "Wrapped heading check.",
+        }
+    ]
+    pdf_bytes = generate_revision_pdf(snippets, title="Long Filename Test")
+
+    from pypdf import PdfReader
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) == 2
+    page1_text = reader.pages[1].extract_text().replace("\n", " ")
+    assert "Page 3" in page1_text
+    assert "Snippet 1 (green)" in page1_text
+    assert "Wrapped heading check." in page1_text

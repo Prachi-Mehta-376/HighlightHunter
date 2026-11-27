@@ -49,6 +49,20 @@ def _draw_footer(c: canvas.Canvas, page_num: int) -> None:
     c.restoreState()
 
 
+def _format_snippet_heading(snip: Dict) -> str:
+    """Format the PDF heading for a snippet, including source page/image if present."""
+    base = f"Snippet {snip['id']} ({snip['color']})"
+    page = snip.get("page")
+    source_name = (snip.get("source_name") or "").strip()
+    if page is not None and source_name:
+        return f"Page {page} ({source_name}) – {base}"
+    if page is not None:
+        return f"Page {page} – {base}"
+    if source_name:
+        return f"{source_name} – {base}"
+    return base
+
+
 def generate_pdf(image, output_path="highlight_report.pdf"):
     """Generate a single-image highlight report PDF using ReportLab.
 
@@ -168,6 +182,10 @@ def generate_revision_pdf(snippets: List[Dict], title: str = "My Revision Notes"
     c.setFillColor(TEXT_MUTED)
     c.drawCentredString(PAGE_W / 2.0, y_title - 42, f"Total snippets: {len(snippets)}")
 
+    pages_covered = {snip["page"] for snip in snippets if snip.get("page") is not None}
+    if pages_covered:
+        c.drawCentredString(PAGE_W / 2.0, y_title - 62, f"Source pages: {len(pages_covered)}")
+
     _draw_footer(c, 1)
     c.showPage()
 
@@ -185,7 +203,10 @@ def generate_revision_pdf(snippets: List[Dict], title: str = "My Revision Notes"
         y_cursor = PAGE_H - MARGIN
 
     for snip in snippets:
-        label = f"Snippet {snip['id']} ({snip['color']})"
+        label = _format_snippet_heading(snip)
+        label_lines = _wrap_text_lines(label, "Helvetica-Bold", 12, USABLE_W)
+        label_h = len(label_lines) * 16 + 6
+
         img = snip["image"]
         iw, ih = img.size
         scale = min(USABLE_W / float(iw), max_single_page_img_h / float(ih), 1.0)
@@ -195,17 +216,19 @@ def generate_revision_pdf(snippets: List[Dict], title: str = "My Revision Notes"
         wrapped_text = _wrap_text_lines(ocr_text, "Helvetica", 10, USABLE_W) if ocr_text else []
         # Reserve enough height for label + image + at least the first few lines of text if present
         min_text_h = (18 + min(len(wrapped_text), 2) * 14) if wrapped_text else 0
-        needed_start_h = 22 + disp_h + 10 + min_text_h
+        needed_start_h = label_h + disp_h + 10 + min_text_h
 
         # Start a new page if the snippet header + image won't fit in remaining space
         if y_cursor - needed_start_h < min_y and y_cursor < PAGE_H - MARGIN:
             start_new_page()
 
-        # Draw snippet label
+        # Draw snippet label (wrapping if source filename is long)
         c.setFont("Helvetica-Bold", 12)
         c.setFillColor(PURPLE_ACCENT)
-        c.drawString(MARGIN, y_cursor - 12, label)
-        y_cursor -= 22
+        for l_line in label_lines:
+            c.drawString(MARGIN, y_cursor - 12, l_line)
+            y_cursor -= 16
+        y_cursor -= 6
 
         # Draw snippet image centered horizontally
         x_offset = MARGIN + (USABLE_W - disp_w) / 2.0
